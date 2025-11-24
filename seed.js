@@ -1,48 +1,63 @@
-require("dotenv").config();
 const mongoose = require("mongoose");
-const MenuItem = require("./models/MenuItem");
+const dotenv = require("dotenv");
+const User = require("./models/User");
+const Product = require("./models/Product");
+const connectDB = require("./config/db");
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(async () => {
-    console.log("Seeding Database...");
-    await MenuItem.deleteMany({});
+dotenv.config();
+connectDB();
 
-    await MenuItem.insertMany([
+const importData = async () => {
+  try {
+    await User.deleteMany();
+    await Product.deleteMany();
+
+    const createdUsers = await User.insertMany([
       {
-        name: "Chicken Biryani",
-        price: 650,
-        category: "Mains",
-        image:
-          "https://images.unsplash.com/photo-1633945274405-b6c8069047b0?w=500&q=80",
-      },
-      {
-        name: "Beef Burger",
-        price: 850,
-        category: "Mains",
-        image:
-          "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=500&q=80",
-      },
-      {
-        name: "Masala Chips",
-        price: 250,
-        category: "Sides",
-        image:
-          "https://images.unsplash.com/photo-1630384060421-cb20d0e0649d?w=500&q=80",
-      },
-      {
-        name: "Passion Juice",
-        price: 200,
-        category: "Drinks",
-        image:
-          "https://images.unsplash.com/photo-1505252585461-04db1eb84625?w=500&q=80",
+        name: "Admin User",
+        email: "admin@example.com",
+        password: "password123",
+        isAdmin: true,
       },
     ]);
 
-    console.log("Database Seeded Successfully");
+    await Product.insertMany([
+      {
+        name: "Kuku Choma",
+        image: "https://placehold.co/400",
+        description: "Grilled chicken",
+        price: 1200,
+        category: "Main",
+      },
+      {
+        name: "Ugali",
+        image: "https://placehold.co/400",
+        description: "Cornmeal staple",
+        price: 100,
+        category: "Side",
+      },
+      {
+        name: "Sukuma Wiki",
+        image: "https://placehold.co/400",
+        description: "Collard greens",
+        price: 100,
+        category: "Side",
+      },
+      {
+        name: "Tusker Lager",
+        image: "https://placehold.co/400",
+        description: "Cold Beer",
+        price: 350,
+        category: "Drinks",
+      },
+    ]);
+
+    console.log("Data Imported!");
     process.exit();
-  })
-  .catch((err) => {
-    console.error(err);
+  } catch (error) {
+    console.error(`${error}`);
     process.exit(1);
-  });
+  }
+};
+
+importData();

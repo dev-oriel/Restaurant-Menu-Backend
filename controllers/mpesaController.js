@@ -1,128 +1,135 @@
 const axios = require("axios");
+const moment = require("moment");
 const Order = require("../models/Order");
 
-// Middleware to generate M-Pesa Access Token
-const getAccessToken = async (req, res, next) => {
-  const consumer_key = process.env.MPESA_CONSUMER_KEY;
-  const consumer_secret = process.env.MPESA_CONSUMER_SECRET;
-  const auth = Buffer.from(`${consumer_key}:${consumer_secret}`).toString(
+// Middleware to generate OAuth token
+const getMpesaToken = async (req, res, next) => {
+  const consumerKey = process.env.MPESA_CONSUMER_KEY;
+  const consumerSecret = process.env.MPESA_CONSUMER_SECRET;
+  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString(
     "base64"
   );
 
   try {
-    const response = await axios.get(
+    const { data } = await axios.get(
       "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
       { headers: { Authorization: `Basic ${auth}` } }
     );
-    req.token = response.data.access_token;
+    req.token = data.access_token;
     next();
   } catch (error) {
-    console.error("Token Error:", error);
-    res.status(400).json({ message: "Access Token Generation Failed" });
+    console.error(
+      "Token Error:",
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).json({ error: "Failed to generate M-Pesa token" });
   }
 };
 
-// 1. Initiate STK Push
+// Initiate STK Push
 const initiateSTKPush = async (req, res) => {
-  const { phoneNumber, amount, tableNumber, items } = req.body;
+  const { phone, amount, orderId } = req.body;
   const token = req.token;
 
-  // Generate Timestamp and Password
-  const date = new Date();
-  const timestamp =
-    date.getFullYear() +
-    ("0" + (date.getMonth() + 1)).slice(-2) +
-    ("0" + date.getDate()).slice(-2) +
-    ("0" + date.getHours()).slice(-2) +
-    ("0" + date.getMinutes()).slice(-2) +
-    ("0" + date.getSeconds()).slice(-2);
+  // Format phone (Must be 254...)
+  const formattedPhone = phone.startsWith("0") ? "254" + phone.slice(1) : phone;
 
-  const shortCode = process.env.MPESA_SHORTCODE;
+  const timestamp = moment().format("YYYYMMDDHHmmss");
+  const shortcode = process.env.MPESA_SHORTCODE;
   const passkey = process.env.MPESA_PASSKEY;
-  const password = Buffer.from(shortCode + passkey + timestamp).toString(
+  const password = Buffer.from(shortcode + passkey + timestamp).toString(
     "base64"
   );
 
   try {
-    const stkResponse = await axios.post(
+    const { data } = await axios.post(
       "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
       {
-        BusinessShortCode: shortCode,
+        BusinessShortCode: shortcode,
         Password: password,
         Timestamp: timestamp,
         TransactionType: "CustomerPayBillOnline",
-        Amount: amount,
-        PartyA: phoneNumber,
-        PartyB: shortCode,
-        PhoneNumber: phoneNumber,
+        Amount: Math.floor(amount), // Sandbox doesn't like decimals sometimes
+        PartyA: formattedPhone,
+        PartyB: shortcode,
+        PhoneNumber: formattedPhone,
         CallBackURL: process.env.MPESA_CALLBACK_URL,
-        AccountReference: `Table ${tableNumber}`,
-        TransactionDesc: "Food Order",
+        AccountReference: "Restaurant",
+        TransactionDesc: `Order ${orderId}`,
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    // Create a PENDING order in DB
-    const newOrder = new Order({
-      tableNumber,
-      items,
-      totalAmount: amount,
-      phoneNumber,
-      checkoutRequestID: stkResponse.data.CheckoutRequestID,
-      status: "PENDING",
-    });
-    await newOrder.save();
-
-    res.status(200).json({
-      message: "STK Push Sent",
-      checkoutID: stkResponse.data.CheckoutRequestID,
-    });
-  } catch (error) {
-    console.error("STK Error:", error.response ? error.response.data : error);
-    res.status(500).json({ message: "STK Push Failed" });
-  }
-};
-
-// 2. Handle Callback (The most critical part)
-const handleCallback = async (req, res) => {
-  // Safaricom expects a 200 OK immediately
-  res.status(200).json({ result: "ok" });
-
-  const callbackData = req.body.Body.stkCallback;
-  const checkoutID = callbackData.CheckoutRequestID;
-
-  if (callbackData.ResultCode === 0) {
-    // Payment Successful
-    const meta = callbackData.CallbackMetadata.Item;
-    const mpesaReceipt = meta.find(
-      (o) => o.Name === "MpesaReceiptNumber"
-    ).Value;
-
-    // Update DB
-    const updatedOrder = await Order.findOneAndUpdate(
-      { checkoutRequestID: checkoutID },
-      { status: "PAID", mpesaReceiptNumber: mpesaReceipt },
-      { new: true }
-    );
-
-    // EMIT SOCKET EVENT to Frontend (Kitchen & Customer)
-    if (req.io) {
-      req.io.emit("payment_success", {
-        orderId: updatedOrder._id,
-        table: updatedOrder.tableNumber,
-        status: "PAID",
-      });
+    // Update Order with CheckoutRequestID
+    const order = await Order.findById(orderId);
+    if (order) {
+      order.checkoutRequestID = data.CheckoutRequestID;
+      order.paymentStatus = "PENDING";
+      await order.save();
     }
 
-    console.log(`Order Paid: ${mpesaReceipt}`);
-  } else {
-    // Payment Failed
-    await Order.findOneAndUpdate(
-      { checkoutRequestID: checkoutID },
-      { status: "FAILED" }
+    res.status(200).json(data);
+  } catch (error) {
+    console.error(
+      "STK Push Error:",
+      error.response ? error.response.data : error.message
     );
-    console.log("Payment Failed/Cancelled");
+    res.status(500).json({ error: "STK Push Failed" });
   }
 };
 
-module.exports = { getAccessToken, initiateSTKPush, handleCallback };
+// Handle Callback from M-Pesa
+const handleCallback = async (req, res) => {
+  console.log("--- M-Pesa Callback Received ---");
+
+  const { Body } = req.body;
+
+  if (!Body || !Body.stkCallback) {
+    console.log("Invalid callback payload");
+    return res.status(400).send("Invalid payload");
+  }
+
+  const { CheckoutRequestID, ResultCode, CallbackMetadata } = Body.stkCallback;
+
+  try {
+    const order = await Order.findOne({ checkoutRequestID: CheckoutRequestID });
+
+    if (!order) {
+      console.log(`Order not found for CheckoutID: ${CheckoutRequestID}`);
+      return res.json({ result: "Order not found" });
+    }
+
+    if (ResultCode === 0) {
+      // Payment Successful
+      const mpesaReceipt = CallbackMetadata.Item.find(
+        (item) => item.Name === "MpesaReceiptNumber"
+      ).Value;
+
+      order.paymentStatus = "PAID";
+      order.mpesaReceiptNumber = mpesaReceipt;
+      await order.save();
+
+      // Emit Socket Event to Frontend (both specific order room and admin dashboard)
+      req.io
+        .to(order._id.toString())
+        .emit("payment_status", { status: "PAID", order });
+      req.io.emit("new_order_paid", order); // For Admin Dashboard
+      console.log(`Order ${order._id} PAID.`);
+    } else {
+      // Payment Failed/Cancelled
+      order.paymentStatus = "FAILED";
+      await order.save();
+      req.io
+        .to(order._id.toString())
+        .emit("payment_status", { status: "FAILED" });
+      console.log(`Order ${order._id} FAILED.`);
+    }
+
+    res.json({ result: "Callback processed" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Callback processing failed" });
+  }
+};
+
+module.exports = { getMpesaToken, initiateSTKPush, handleCallback };

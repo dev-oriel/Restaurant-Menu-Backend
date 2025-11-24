@@ -1,53 +1,60 @@
-require("dotenv").config();
 const express = require("express");
-const http = require("http");
-const mongoose = require("mongoose");
+const dotenv = require("dotenv");
 const cors = require("cors");
+const http = require("http");
 const { Server } = require("socket.io");
-const { getAccessToken } = require("./utils/mpesa");
-const orderController = require("./controllers/orderController");
+const connectDB = require("./config/db");
+const { notFound, errorHandler } = require("./middleware/errorMiddleware");
+
+dotenv.config();
+connectDB();
 
 const app = express();
 const server = http.createServer(app);
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-
 // Socket.io Setup
 const io = new Server(server, {
-  cors: { origin: "*" }, // Allow all origins for local dev
+  cors: {
+    origin: "*", // Allow all for local dev
+    methods: ["GET", "POST"],
+  },
 });
 
-// Inject io into request
+// Make io accessible in routes
 app.use((req, res, next) => {
   req.io = io;
   next();
 });
 
+app.use(cors());
+app.use(express.json());
+
 // Routes
-app.get("/", (req, res) => res.send("Restaurant API Running"));
+app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/menu", require("./routes/menuRoutes"));
+app.use("/api/orders", require("./routes/orderRoutes"));
+app.use("/api/mpesa", require("./routes/mpesaRoutes"));
 
-// Order Routes
-app.post("/api/orders", getAccessToken, orderController.createOrder);
-app.post("/api/mpesa/callback", orderController.mpesaCallback);
-app.get("/api/orders/:id/receipt", orderController.getReceipt);
-
-// Mock Menu Route (Simplify for skeleton)
-app.get("/api/menu", (req, res) => {
-  res.json([
-    { _id: "1", name: "Kuku Choma", price: 1200, category: "Mains" },
-    { _id: "2", name: "Sukuma Wiki", price: 100, category: "Sides" },
-    { _id: "3", name: "Ugali", price: 80, category: "Sides" },
-  ]);
+app.get("/", (req, res) => {
+  res.send("Restaurant API is running...");
 });
 
-// DB Connection
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.error(err));
+// Error Handling
+app.use(notFound);
+app.use(errorHandler);
 
-// Start
+io.on("connection", (socket) => {
+  console.log("New client connected:", socket.id);
+
+  socket.on("join_order", (orderId) => {
+    socket.join(orderId);
+    console.log(`Socket ${socket.id} joined order room: ${orderId}`);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Client disconnected");
+  });
+});
+
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

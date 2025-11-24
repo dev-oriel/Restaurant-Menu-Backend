@@ -1,12 +1,12 @@
 const express = require("express");
 const router = express.Router();
 const {
-  getAccessToken,
+  getMpesaToken,
   initiateSTKPush,
   handleCallback,
 } = require("../controllers/mpesaController");
 
-router.post("/pay", getAccessToken, initiateSTKPush);
-router.post("/callback", handleCallback);
+router.post("/stkpush", getMpesaToken, initiateSTKPush);
+router.post("/callback", handleCallback); // Public endpoint for ngrok
 
 module.exports = router;
