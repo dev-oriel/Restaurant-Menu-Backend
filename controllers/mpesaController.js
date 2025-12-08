@@ -31,8 +31,14 @@ const initiateSTKPush = async (req, res) => {
   const { phone, amount, orderId } = req.body;
   const token = req.token;
 
-  // Format phone (Must be 254...)
-  const formattedPhone = phone.startsWith("0") ? "254" + phone.slice(1) : phone;
+  // FIX: Robust Phone Formatting (Removes leading 0, +254, spaces, and ensures 254 prefix)
+  const cleanPhone = phone.replace(/\s+/g, ""); // Remove spaces
+  const formattedPhone = cleanPhone.replace(/^0|^\+254/g, "254");
+
+  if (!formattedPhone.startsWith("254")) {
+    // If phone number is still invalid, reject early
+    return res.status(400).json({ message: "Invalid phone number format." });
+  }
 
   const timestamp = moment().format("YYYYMMDDHHmmss");
   const shortcode = process.env.MPESA_SHORTCODE;
@@ -49,7 +55,7 @@ const initiateSTKPush = async (req, res) => {
         Password: password,
         Timestamp: timestamp,
         TransactionType: "CustomerPayBillOnline",
-        Amount: Math.floor(amount), // Sandbox doesn't like decimals sometimes
+        Amount: Math.floor(amount), // Ensure integer amount
         PartyA: formattedPhone,
         PartyB: shortcode,
         PhoneNumber: formattedPhone,
@@ -74,7 +80,11 @@ const initiateSTKPush = async (req, res) => {
       "STK Push Error:",
       error.response ? error.response.data : error.message
     );
-    res.status(500).json({ error: "STK Push Failed" });
+    // Send specific error details back to the client if possible
+    const apiError =
+      error.response?.data?.CustomerMessage ||
+      "Failed to initiate transaction.";
+    res.status(500).json({ error: apiError });
   }
 };
 
@@ -88,7 +98,7 @@ const handleCallback = async (req, res) => {
     console.log("Invalid callback payload");
     return res.status(400).send("Invalid payload");
   }
-
+  // ... (rest of the callback logic remains the same)
   const { CheckoutRequestID, ResultCode, CallbackMetadata } = Body.stkCallback;
 
   try {
